@@ -1,7 +1,6 @@
 /*
 Author: Slava Imameev   
 (c) 2006 Slava Imameev, All Rights Reserved
-
 Revision history:
 04.12.2006 ( December )
  Start
@@ -20,18 +19,18 @@ typedef struct _OC_RW_SPIN_LOCK{
     // 0x00ffffff for one reader, 0x00fffffe for two readers,
     // and 0x00000000 for one writer
     //
-    LONG    RwLock;
+    LONG    RwLock; //有符号
 } OC_RW_SPIN_LOCK, *POC_RW_SPIN_LOCK;
 
 //-----------------------------------------------------------
-
+//raw行为失败不会改数据
 __forceinline
 VOID
 OcRwInitializeRwLock(
     IN POC_RW_SPIN_LOCK Lock
     )
 {
-    Lock->RwLock = 0x01000000;
+    Lock->RwLock = 0x01000000;//no owner
 }
 
 //-----------------------------------------------------------
@@ -62,7 +61,7 @@ OcRwRawTryLockForRead(
 }
 
 //-----------------------------------------------------------
-
+//raw行为失败不会改数据
 __forceinline
 ULONG
 OcRwRawTryLockForWrite(
@@ -79,7 +78,7 @@ OcRwRawTryLockForWrite(
     // step 1 - try to acquire for write
     //
     if( 0x01000000 == InterlockedCompareExchange( &Lock->RwLock, 
-                                                  0x00000000, 
+                                                  0x00000000, //one writer
                                                   0x01000000 ) )
         return 1;
     //
@@ -89,10 +88,11 @@ OcRwRawTryLockForWrite(
 }
 
 //-----------------------------------------------------------
-
+//可能会休眠，就是醒来看一眼后继续睡觉
+//拿不到不会修改数据
 __forceinline
 VOID
-OcRwAcquireLockForRead(
+OcRwAcquireLockForRead( //等待退出0x0,0x0代表一个writer
     IN POC_RW_SPIN_LOCK Lock,
     OUT KIRQL* PtrOldIrql
     )
@@ -107,7 +107,7 @@ OcRwAcquireLockForRead(
     //
     // spin until lock is acquired
     //
-    while( 0x0 == OcRwRawTryLockForRead( Lock ) ){
+    while( 0x0 == OcRwRawTryLockForRead( Lock ) ){ //0x0代表数据未曾实质改变
         //
         // to avoid starvaition when 
         // two threads compete for
@@ -125,7 +125,7 @@ OcRwAcquireLockForRead(
             Timeout.QuadPart = -(10i64);
 
             KeDelayExecutionThread( KernelMode,
-                                    FALSE,
+                                    FALSE,//内核必须设为false，就是不通知
                                     &Timeout );
         }
         KeRaiseIrql( DISPATCH_LEVEL, PtrOldIrql );
@@ -133,7 +133,7 @@ OcRwAcquireLockForRead(
 }
 
 //-----------------------------------------------------------
-
+//非常快，毕竟是release
 __forceinline
 VOID
 OcRwReleaseReadLock(
@@ -148,7 +148,8 @@ OcRwReleaseReadLock(
 }
 
 //-----------------------------------------------------------
-
+//可能会spin，这样比较费
+//spin期间不会改数据
 __forceinline
 VOID
 OcRwAcquireLockForWrite(
@@ -169,7 +170,8 @@ OcRwAcquireLockForWrite(
 }
 
 //-----------------------------------------------------------
-
+//非常快，毕竟是release
+//不可能连续有两个，因为写必须互斥，所以一次性加上0x01000000
 __forceinline
 VOID
 OcRwReleaseWriteLock(
