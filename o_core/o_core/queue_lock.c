@@ -2,7 +2,6 @@
 Author: Slava Imameev   
 Copyright (c) 2006  , Slava Imameev
 All Rights Reserved.
-
 Revision history:
 19.03.2007 ( March )
  Start
@@ -22,7 +21,7 @@ systems I know of.
 #include "proto.h"
 
 //----------------------------------------------------------
-
+//地址是4个字节对齐的，所以它的低2bit是没用用到的，这里用于放置flag
 __forceinline
 POC_QUEUE_WAIT_BLOCK
 OcQlGetNextWaitBlock(
@@ -59,6 +58,7 @@ OcQlGetWaitBlockFlags(
 
 //----------------------------------------------------------
 
+//的确就是设置第一个参数(WaitBlock)的flag，并不是WaitBlock->next的flag，只是借用了next的低2bit而已
 __forceinline
 VOID
 OcQlSetWaitBlockFlags(
@@ -84,7 +84,7 @@ __forceinline
 VOID
 OcQlSetNextWaitBlockAndFlags(
     IN POC_QUEUE_WAIT_BLOCK    PredecessorWaitBlock,
-    IN POC_QUEUE_WAIT_BLOCK    NextWaitBlock,
+    IN POC_QUEUE_WAIT_BLOCK    NextWaitBlock, //干净的，不允许已经有flag，不过有也不会用到，不会加入到前任身上
     IN ULONG_PTR    PredecessorBlockFlags
     )
     /*
@@ -92,7 +92,7 @@ OcQlSetNextWaitBlockAndFlags(
     */
 {
     ASSERT( PredecessorBlockFlags <= OC_WAIT_BLOCK_FLAGS_MASK );
-    ASSERT( 0x0 == ( ((ULONG_PTR)NextWaitBlock) & OC_WAIT_BLOCK_FLAGS_MASK ) );
+    ASSERT( 0x0 == ( ((ULONG_PTR)NextWaitBlock) & OC_WAIT_BLOCK_FLAGS_MASK ) );//此句应当删除，和后面冲突
 
     //
     // the unused least significant bits of the pointer
@@ -113,16 +113,17 @@ OcQlInitializeWaitBlock(
     */
 {
     WaitBlock->Next = NULL;
-    KeInitializeEvent( &WaitBlock->Event, SynchronizationEvent, FALSE );
+    KeInitializeEvent( &WaitBlock->Event, SynchronizationEvent, FALSE );//SynchronizationEvent?
 }
 
 //----------------------------------------------------------
-
+//实际上有两处插入，另外一处是插入到从后向前找到的相同context的WaitBlock->Next处，并把PrevBlockFlags或加到前任（刚找到的WaitBlock）身上
+//同时WaitBlock的flag丢失
 __forceinline
 BOOLEAN
 OcInsertWaitBlockInList(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN POC_QUEUE_WAIT_BLOCK    WaitBlock,
+    IN POC_QUEUE_WAIT_BLOCK    WaitBlock, //(1)不允许有next WaitBlock，(2)不允许有OC_WAIT_BLOCK_BARRIER_FLAG
     IN ULONG_PTR    PrevBlockFlags
     )
     /*
@@ -145,14 +146,13 @@ OcInsertWaitBlockInList(
         //
         // start the search from the list end, because I need the last inserted lock
         //
-        for( request = QueueLock->ListHead.Blink; request != &QueueLock->ListHead; request = request->Blink ){
+        for( request = QueueLock->ListHead.Blink; request != &QueueLock->ListHead; request = request->Blink ){ //倒着搜
 
             POC_QUEUE_WAIT_BLOCK    ListWaitBlock;
 
             ListWaitBlock = CONTAINING_RECORD( request, OC_QUEUE_WAIT_BLOCK, ListEntry );
-            if( ListWaitBlock->Context == WaitBlock->Context ){
-
-                ASSERT( NULL == OcQlGetNextWaitBlock( ListWaitBlock ) );
+            if( ListWaitBlock->Context == WaitBlock->Context ){//找到same context的WaitBlock了
+                ASSERT( NULL == OcQlGetNextWaitBlock( ListWaitBlock ) );//为何没有next？
                 ASSERT( OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE == OcQlGetWaitBlockFlags( WaitBlock ) || 
                         0x0 == OcQlGetWaitBlockFlags( WaitBlock ) );
 
@@ -200,7 +200,7 @@ OcQlInitializeQueueLock(
 VOID
 OcQlAcquireLockWithContext(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN OUT POC_QUEUE_WAIT_BLOCK    WaitBlock,
+    IN OUT POC_QUEUE_WAIT_BLOCK    WaitBlock,//干净的，不允许已经有flag
     IN ULONG_PTR    Context
     )
 {
@@ -243,11 +243,11 @@ OcQlAcquireLockWithContext(
 }
 
 //----------------------------------------------------------
-
+//如果WaitBlock带有next，则释放next的Event（KeSetEvent）
 VOID
 OcQlReleaseLockWithContext(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN POC_QUEUE_WAIT_BLOCK    WaitBlock
+    IN POC_QUEUE_WAIT_BLOCK    WaitBlock //不能有OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE
     )
 {
 #if DBG
@@ -355,7 +355,7 @@ OcQlReleaseLockWithContext(
 VOID
 OcQlInsertBarrier(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN OUT POC_QUEUE_WAIT_BLOCK    BarrierWaitBlock,
+    IN OUT POC_QUEUE_WAIT_BLOCK    BarrierWaitBlock,//干净的，不允许已经有flag
     IN ULONG_PTR    Context
     )
     /*
@@ -382,18 +382,19 @@ OcQlInsertBarrier(
     ASSERT( OcIsFlagOn( OcQlGetWaitBlockFlags( BarrierWaitBlock ), OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE ) );
 
     OcInsertWaitBlockInList( QueueLock,
-                             BarrierWaitBlock,
+                             BarrierWaitBlock, //flag = OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE
                              OC_WAIT_BLOCK_BARRIER_FLAG );
 
     ASSERT( OcIsFlagOn( OcQlGetWaitBlockFlags( BarrierWaitBlock ), OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE ) );
 }
 
 //----------------------------------------------------------
-
+//删除BarrierWaitBlock，BarrierWaitBlock的next块占据现有的位置
+//寻找失败的情况下会释放BarrierWaitBlock的next块携带的KEVENT
 VOID
 OcQlRemoveBarrier(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN POC_QUEUE_WAIT_BLOCK    BarrierWaitBlock
+    IN POC_QUEUE_WAIT_BLOCK    BarrierWaitBlock //带有OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE标志
     )
 {
 
@@ -474,4 +475,3 @@ OcQlRemoveBarrier(
 }
 
 //----------------------------------------------------------
-
