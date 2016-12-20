@@ -200,7 +200,7 @@ OcQlInitializeQueueLock(
 VOID
 OcQlAcquireLockWithContext(
     IN POC_QUEUE_LOCK    QueueLock,
-    IN OUT POC_QUEUE_WAIT_BLOCK    WaitBlock,//干净的，不允许已经有flag
+    IN OUT POC_QUEUE_WAIT_BLOCK    WaitBlock,//不允许已经有flag
     IN ULONG_PTR    Context
     )
 {
@@ -269,11 +269,7 @@ OcQlReleaseLockWithContext(
         //
         // the next block is a barrier which might be( or has been ) removed 
         // asynchronously, so before setting an event acquire the 
-        // lock to synchronize with OcQlRemoveBarrier
-        //
-
-        //
-        // remove the wait block from the list
+        // lock to synchronize with OcQlRemoveBarrier remove the wait block from the list
         //
         KeAcquireSpinLock( &QueueLock->ListSpinLock, &OldIrql );
         {// start of the lock
@@ -372,25 +368,26 @@ OcQlInsertBarrier(
     // initialize the wait block
     //
     OcQlInitializeWaitBlock( BarrierWaitBlock );
-    BarrierWaitBlock->Context = Context;
+    BarrierWaitBlock->Context = Context;//必须得有，barrier也不例外，否则无法查找
 #if DBG
     BarrierWaitBlock->Signature = OC_QL_SIGNATURE;
 #endif//DBG
 
-    OcQlSetWaitBlockFlags( BarrierWaitBlock, OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE );
+    OcQlSetWaitBlockFlags( BarrierWaitBlock, OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE );//I'm a barrier
 
     ASSERT( OcIsFlagOn( OcQlGetWaitBlockFlags( BarrierWaitBlock ), OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE ) );
 
     OcInsertWaitBlockInList( QueueLock,
-                             BarrierWaitBlock, //flag = OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE
+                             BarrierWaitBlock, //flag = I'm a barrier
                              OC_WAIT_BLOCK_BARRIER_FLAG );
 
     ASSERT( OcIsFlagOn( OcQlGetWaitBlockFlags( BarrierWaitBlock ), OC_WAIT_BLOCK_BARRIER_FLAG_NATIVE ) );
 }
 
 //----------------------------------------------------------
-//删除BarrierWaitBlock，BarrierWaitBlock的next块占据现有的位置
-//寻找失败的情况下会释放BarrierWaitBlock的next块携带的KEVENT
+//删除BarrierWaitBlock，有续接
+//删除并不意味着一定会有KEVENT
+//寻找prev block失败的情况下要开闸（会释放BarrierWaitBlock的next块携带的KEVENT）
 VOID
 OcQlRemoveBarrier(
     IN POC_QUEUE_LOCK    QueueLock,
